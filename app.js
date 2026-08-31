@@ -70,7 +70,35 @@ const els = {
   buildProgress: $('#buildProgress'),
   lastUpdate: $('#lastUpdate'),
   table: $('#resultsTable'),
+  topbar: document.querySelector('.topbar'),
+  controlsBar: document.querySelector('.controls'),
 };
+
+// ---------------------------------------------------------------------------
+// sticky header layout — the topbar and controls bar heights change (extra
+// controls wrapping to a second line on narrower windows, status text
+// changing length, etc.), so the sticky offsets for the controls bar and
+// the table header are measured live instead of hard-coded. Without this
+// the table heading drifts out of position / overlaps whenever the bars
+// above it change height.
+// ---------------------------------------------------------------------------
+
+function updateStickyOffsets() {
+  const topbarH = els.topbar ? els.topbar.getBoundingClientRect().height : 0;
+  const controlsH = els.controlsBar ? els.controlsBar.getBoundingClientRect().height : 0;
+  document.documentElement.style.setProperty('--topbar-h', `${topbarH}px`);
+  document.documentElement.style.setProperty('--sticky-h', `${topbarH + controlsH}px`);
+}
+
+if (typeof ResizeObserver !== 'undefined') {
+  const ro = new ResizeObserver(() => updateStickyOffsets());
+  if (els.topbar) ro.observe(els.topbar);
+  if (els.controlsBar) ro.observe(els.controlsBar);
+} else {
+  window.addEventListener('resize', updateStickyOffsets);
+}
+window.addEventListener('load', updateStickyOffsets);
+updateStickyOffsets();
 
 // ---------------------------------------------------------------------------
 // state
