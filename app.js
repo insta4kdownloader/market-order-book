@@ -19,7 +19,7 @@
 //    quantity within ±band% of the current mid price on each side — the
 //    "Depth Gap ×" column is max(buy,sell)/min(buy,sell), continuously
 //    live, not a periodic poll.
-// 3. Subscribes to the aggTrade websocket stream for the same symbols and
+// 3. Subscribes to the raw trade websocket stream for the same symbols and
 //    keeps a short rolling trade log, classifying every trade as
 //    buy-taker or sell-taker, to show live buy:sell executed-quantity
 //    ratios over the last 10s / 30s / 60s.
@@ -346,7 +346,7 @@ function computeBandAndPrune(row, bandPct) {
 }
 
 // ---------------------------------------------------------------------------
-// step 3: live trade flow via websocket aggTrade streams
+// step 3: live trade flow via websocket trade streams
 // ---------------------------------------------------------------------------
 
 function chunk(arr, size) {
@@ -378,7 +378,7 @@ function connectStreams() {
 
   chunks.forEach((symbolsChunk) => {
     const streams = symbolsChunk
-      .flatMap((s) => [`${s}@aggTrade`, `${s}@depth@${DEPTH_STREAM_SPEED}`])
+      .flatMap((s) => [`${s}@trade`, `${s}@depth@${DEPTH_STREAM_SPEED}`])
       .join('/');
     const url = `${WS_BASE}?streams=${streams}`;
     const ws = new WebSocket(url);
@@ -397,7 +397,7 @@ function connectStreams() {
       const row = rows.get(d.s);
       if (!row) return;
 
-      if (d.e === 'aggTrade') {
+      if (d.e === 'trade' || d.e === 'aggTrade') {
         const side = d.m ? 'sell' : 'buy'; // m=true: buyer is maker -> taker sold
         // Use the LOCAL receipt time (not Binance's d.T) for windowing. The
         // 10s/30s/60s buckets are compared against Date.now() at render

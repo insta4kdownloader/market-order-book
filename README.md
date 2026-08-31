@@ -4,7 +4,7 @@ A fully static, no-backend PWA (companion to your NSE Volume & Gap Scanner) that
 
 1. Ranks **every live USDT-margined perpetual contract** by its **average daily turnover (USDT) over the last 30 completed days**, once a day. The **"Top N by turnover"** box lets you pick how many of the top-ranked symbols to actually track (default 100) — changing it just re-slices the cached ranking, no re-fetch needed.
 2. Maintains a **live local order book** for every tracked symbol via Binance's diff-depth websocket stream (seeded from a REST snapshot, then updated tick by tick — the same method Binance's own docs recommend), and continuously sums resting quantity within **±0.5%** (configurable) of the current mid price on the **buy side** and the **sell side**. Rows are sorted by **Depth Gap ×** — `max(buy, sell) / min(buy, sell)` — so a symbol where sell-side resting quantity is 3× buy-side shows `S 3.00×` at the top. This is genuinely live: no polling interval, the book updates as fast as Binance pushes it (up to every 100ms) and the table redraws twice a second.
-3. Streams **live executed trades** (aggTrade) for the same symbols and shows the **buy:sell executed-quantity ratio** over the last **10 seconds**, **30 seconds**, and **60 seconds**, also refreshed twice a second.
+3. Streams **live executed trades** (the raw `@trade` stream — see note below on why not `@aggTrade`) for the same symbols and shows the **buy:sell executed-quantity ratio** over the last **10 seconds**, **30 seconds**, and **60 seconds**, also refreshed twice a second.
 
 There is no server. Every file here is static HTML/CSS/JS meant to be pushed straight to GitHub Pages (or opened locally). The page calls `fapi.binance.com` (REST, only for the daily ranking and one-time order-book snapshots) and `fstream.binance.com` (WebSocket, for everything live) **directly from your browser** — Binance's public futures market-data endpoints send permissive CORS headers and the streams need no authentication, so this works with no backend proxy and no API key.
 
@@ -57,7 +57,7 @@ buyQty(band)     = sum of live resting bid quantity at prices >= mid * (1 - band
 sellQty(band)    = sum of live resting ask quantity at prices <= mid * (1 + band%/100)
 depthGapX        = max(buyQty, sellQty) / min(buyQty, sellQty)
 
-For each executed trade (aggTrade stream):
+For each executed trade (@trade stream):
   side = 'sell' if the trade's buyer was the resting maker (i.e. a market sell hit the bid)
   side = 'buy'  if the trade's buyer was the taker (i.e. a market buy hit the ask)
 
@@ -70,11 +70,15 @@ This follows Binance's documented procedure for maintaining a local order book f
 
 **A known limitation**: Binance's depth snapshot caps out at 1000 price levels per side. For extremely liquid, tight-tick symbols (BTC, ETH) with very deep books, 1000 levels can sometimes fall short of a full 0.5% price range, in which case the band sums whatever levels are actually available. This is a hard ceiling in Binance's own API, not something this app can work around — numbers for such symbols may slightly under-count true 0.5% depth. Levels are pruned once they fall outside `band% × 3` of the mid price to keep memory bounded, so widening the band box picks up more levels again automatically (as long as Binance sent them).
 
+### Why `@trade` instead of `@aggTrade` for the Flow columns
+
+Binance also offers an "aggregate trade" stream (`@aggTrade`) that bundles trades matched against the same order at the same price/time into one event. It looks like the more efficient choice, and this app used it originally — but in testing it turned out to silently deliver **zero** messages in some network/regional conditions (confirmed by connecting directly to Binance's websocket: `@depth` and `@bookTicker` streamed hundreds of updates while `@aggTrade` produced nothing at all for the same symbol over the same window), which is exactly the failure mode that showed up as permanently blank Flow columns while the order book kept working fine. The plain `@trade` stream (one event per individual executed trade, slightly more data volume but functionally identical fields — `q` for quantity, `m` for buyer-is-maker) delivered data immediately and reliably in the same test, so the app now uses that instead.
+
 ## Rate limits and data-source notes
 
 - **Turnover ranking**: one `klines` request per symbol (weight 1 each, since limit ≤ 100) for ~300–400 perpetual contracts — roughly 300–400 weight, done once a day with 8-way concurrency. Cached in `localStorage` so it only runs once per calendar day unless you click "Rebuild turnover ranking".
 - **Order-book seeding**: one `GET /fapi/v1/depth?limit=1000` (weight 20) per tracked symbol, but only once at startup (and again, per-symbol, on the rare sequence-gap resync) — paced to roughly one request every 700ms (~1700 weight/minute), well inside Binance's 2400-weight/minute public budget. After seeding, the book updates for free over the websocket.
-- **Live data**: one combined WebSocket connection per ~15 symbols, each carrying both `@aggTrade` and `@depth@100ms` streams, reconnecting automatically with a 3s backoff if a connection drops. Zero REST weight cost — both the order book and the trade flow are push feeds.
+- **Live data**: one combined WebSocket connection per ~15 symbols, each carrying both `@trade` and `@depth@100ms` streams, reconnecting automatically with a 3s backoff if a connection drops. Zero REST weight cost — both the order book and the trade flow are push feeds.
 - This is a personal research/monitoring tool, not investment advice, and no order is ever placed — everything here is read-only market data.
 
 ## File map
