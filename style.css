@@ -20,6 +20,7 @@ body {
   color: var(--text);
   min-height: 100vh;
   font-size: 14px;
+  overflow-x: auto; /* horizontal scroll for the wide table lives at the page level, see .table-wrap */
 }
 
 .topbar {
@@ -99,7 +100,15 @@ body {
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .table-wrap {
-  overflow-x: auto;
+  /* Deliberately NOT overflow-x: auto here. Any ancestor of a sticky
+     element with overflow other than visible becomes that element's
+     "nearest scrolling ancestor" per the CSS spec, which silently
+     changes what a sticky <th> sticks relative to — even when that
+     ancestor never actually shows a scrollbar. In practice this makes
+     the sticky table header detach and drift once the page is scrolled
+     far enough (it starts sticking to the top of THIS box instead of
+     the viewport). So horizontal scrolling for a wide table is handled
+     by the page itself (see body, above) instead of by this wrapper. */
   padding: 0 20px 20px;
 }
 
