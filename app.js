@@ -399,7 +399,17 @@ function connectStreams() {
 
       if (d.e === 'aggTrade') {
         const side = d.m ? 'sell' : 'buy'; // m=true: buyer is maker -> taker sold
-        row.trades.push({ t: d.T || Date.now(), qty: parseFloat(d.q), side });
+        // Use the LOCAL receipt time (not Binance's d.T) for windowing. The
+        // 10s/30s/60s buckets are compared against Date.now() at render
+        // time, so if this browser's system clock is even slightly off
+        // from Binance's server clock, comparing against d.T can make
+        // every trade look instantly "too old" (or, less obviously,
+        // permanently "in the future") and the Flow columns would show
+        // nothing at all even though trades are arriving correctly. Local
+        // receipt time keeps the whole window self-consistent regardless
+        // of clock skew; network latency here is a few tens of ms, far
+        // smaller than the 10s window it could ever affect.
+        row.trades.push({ t: Date.now(), qty: parseFloat(d.q), side });
       } else if (d.e === 'depthUpdate') {
         handleDepthEvent(row, d);
       }
