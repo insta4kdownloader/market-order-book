@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Binance Futures Order-Flow Scanner</title>
-<meta name="description" content="Top-N USDT-M futures by 30-day turnover, ranked by live order-book imbalance, with live 10s/30s/60s buy-sell trade-flow ratios." />
+<meta name="description" content="Top-N USDT-M futures by 30-day turnover, ranked by live order-book imbalance, with live 10s/30s/60s/5m buy-sell trade-flow ratios." />
 <meta name="theme-color" content="#0f172a" />
 <link rel="manifest" href="manifest.json" />
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
@@ -44,10 +44,6 @@
     <label for="minMultiplier">Min gap multiplier</label>
     <input type="number" id="minMultiplier" min="1" step="0.1" value="1" />
   </div>
-  <div class="control control-search">
-    <label for="searchBox">Search symbol</label>
-    <input type="text" id="searchBox" placeholder="e.g. BTC" autocomplete="off" />
-  </div>
   <div class="control control-buttons">
     <button class="btn btn-primary" id="applyTopNBtn">Apply top N</button>
     <button class="btn btn-primary" id="pauseBtn">Pause</button>
@@ -62,13 +58,13 @@
         <th data-key="rank" class="col-rank">#</th>
         <th data-key="symbol" class="col-symbol sortable">Symbol</th>
         <th data-key="price" class="col-num sortable">Price</th>
-        <th data-key="avgTurnover" class="col-num sortable">Avg Turnover (30d)</th>
         <th data-key="buyQty" class="col-num sortable">Buy Qty (band)</th>
         <th data-key="sellQty" class="col-num sortable">Sell Qty (band)</th>
         <th data-key="multiplier" class="col-num sortable sorted-desc">Depth Gap ×</th>
         <th data-key="ratio10" class="col-num sortable">Flow 10s (B:S)</th>
         <th data-key="ratio30" class="col-num sortable">Flow 30s (B:S)</th>
         <th data-key="ratio60" class="col-num sortable">Flow 60s (B:S)</th>
+        <th data-key="ratio300" class="col-num sortable">Flow 5m (B:S)</th>
       </tr>
     </thead>
     <tbody id="resultsBody">

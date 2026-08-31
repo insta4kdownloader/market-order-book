@@ -46,7 +46,7 @@ const MAX_TOP_N = 300;
 const KLINES_DAYS = 30;
 const KLINES_CONCURRENCY = 8;
 const RENDER_INTERVAL_MS = 500; // both depth-gap and trade-flow columns recompute this often
-const TRADE_WINDOW_MS = 65000; // keep a little more than 60s for the widest ratio window
+const TRADE_WINDOW_MS = 305000; // keep a little more than 5min for the widest ratio window
 const WS_CHUNK_SIZE = 15; // symbols per websocket connection (2 streams/symbol -> 30 streams/conn)
 const DEPTH_STREAM_SPEED = '100ms'; // fastest update speed Binance offers for diff depth
 const SNAPSHOT_LIMIT = 1000; // max depth REST snapshot size (weight 20)
@@ -63,7 +63,6 @@ const els = {
   applyTopNBtn: $('#applyTopNBtn'),
   bandPct: $('#bandPct'),
   minMultiplier: $('#minMultiplier'),
-  searchBox: $('#searchBox'),
   pauseBtn: $('#pauseBtn'),
   rebuildBtn: $('#rebuildBtn'),
   resultsBody: $('#resultsBody'),
@@ -455,14 +454,6 @@ function fmtNum(n, digits = 4) {
   return n.toLocaleString(undefined, { maximumFractionDigits: digits });
 }
 
-function fmtTurnover(n) {
-  if (!isFinite(n) || n === 0) return '—';
-  if (n >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
-  if (n >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
-  if (n >= 1e3) return `$${(n / 1e3).toFixed(1)}K`;
-  return `$${n.toFixed(0)}`;
-}
-
 function fmtMultiplier(m) {
   if (!isFinite(m)) return '∞×';
   return `${m.toFixed(2)}×`;
@@ -486,19 +477,18 @@ function buildRow(symbol) {
     <td class="col-rank"></td>
     <td class="col-symbol symbol-cell"></td>
     <td class="col-num c-price"></td>
-    <td class="col-num c-turnover"></td>
     <td class="col-num c-buyqty"></td>
     <td class="col-num c-sellqty"></td>
     <td class="col-num c-mult"></td>
     <td class="col-num c-r10"></td>
     <td class="col-num c-r30"></td>
     <td class="col-num c-r60"></td>
+    <td class="col-num c-r300"></td>
   `;
   return tr;
 }
 
 function computeSortedList(now, bandPct) {
-  const filterText = els.searchBox.value.trim().toUpperCase();
   const minMult = parseFloat(els.minMultiplier.value) || 1;
 
   const list = universe.map((u) => {
@@ -507,9 +497,9 @@ function computeSortedList(now, bandPct) {
     const r10 = flowRatio(row, now, 10000);
     const r30 = flowRatio(row, now, 30000);
     const r60 = flowRatio(row, now, 60000);
+    const r300 = flowRatio(row, now, 300000);
     return {
       symbol: u.symbol,
-      avgTurnover: u.avgTurnover,
       price: row.mid,
       buyQty: row.buyQty,
       sellQty: row.sellQty,
@@ -517,10 +507,9 @@ function computeSortedList(now, bandPct) {
       heavySide: row.heavySide,
       synced: row.book.synced,
       depthAgeMs: row.depthUpdatedAt ? now - row.depthUpdatedAt : Infinity,
-      r10, r30, r60,
+      r10, r30, r60, r300,
     };
   }).filter((r) => {
-    if (filterText && !r.symbol.includes(filterText)) return false;
     if (isFinite(r.multiplier) && r.multiplier < minMult) return false;
     return true;
   });
@@ -560,7 +549,6 @@ function render() {
       tr.querySelector('.col-rank').textContent = i + 1;
       tr.querySelector('.col-symbol').textContent = r.symbol.replace(/USDT$/, '');
       tr.querySelector('.c-price').textContent = r.price ? fmtNum(r.price, 4) : '—';
-      tr.querySelector('.c-turnover').textContent = fmtTurnover(r.avgTurnover);
       tr.querySelector('.c-buyqty').textContent = fmtNum(r.buyQty, 2);
       tr.querySelector('.c-sellqty').textContent = fmtNum(r.sellQty, 2);
       const multCell = tr.querySelector('.c-mult');
@@ -570,9 +558,11 @@ function render() {
       const p10 = fmtRatioPill(r.r10.buy, r.r10.sell);
       const p30 = fmtRatioPill(r.r30.buy, r.r30.sell);
       const p60 = fmtRatioPill(r.r60.buy, r.r60.sell);
+      const p300 = fmtRatioPill(r.r300.buy, r.r300.sell);
       tr.querySelector('.c-r10').innerHTML = `<span class="pill ${p10.cls}">${p10.text}</span>`;
       tr.querySelector('.c-r30').innerHTML = `<span class="pill ${p30.cls}">${p30.text}</span>`;
       tr.querySelector('.c-r60').innerHTML = `<span class="pill ${p60.cls}">${p60.text}</span>`;
+      tr.querySelector('.c-r300').innerHTML = `<span class="pill ${p300.cls}">${p300.text}</span>`;
       tr.classList.toggle('stale', !r.synced);
       frag.appendChild(tr);
     });
@@ -639,7 +629,6 @@ els.topNInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') applyTopN();
 });
 
-els.searchBox.addEventListener('input', render);
 els.minMultiplier.addEventListener('input', render);
 els.bandPct.addEventListener('change', render);
 

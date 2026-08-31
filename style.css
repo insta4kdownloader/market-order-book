@@ -82,7 +82,6 @@ body {
   font-size: 13px;
   width: 130px;
 }
-.control-search input { width: 180px; }
 .control-buttons { flex-direction: row; gap: 10px; }
 
 .btn {

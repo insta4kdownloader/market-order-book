@@ -4,7 +4,7 @@ A fully static, no-backend PWA (companion to your NSE Volume & Gap Scanner) that
 
 1. Ranks **every live USDT-margined perpetual contract** by its **average daily turnover (USDT) over the last 30 completed days**, once a day. The **"Top N by turnover"** box lets you pick how many of the top-ranked symbols to actually track (default 100) — changing it just re-slices the cached ranking, no re-fetch needed.
 2. Maintains a **live local order book** for every tracked symbol via Binance's diff-depth websocket stream (seeded from a REST snapshot, then updated tick by tick — the same method Binance's own docs recommend), and continuously sums resting quantity within **±0.5%** (configurable) of the current mid price on the **buy side** and the **sell side**. Rows are sorted by **Depth Gap ×** — `max(buy, sell) / min(buy, sell)` — so a symbol where sell-side resting quantity is 3× buy-side shows `S 3.00×` at the top. This is genuinely live: no polling interval, the book updates as fast as Binance pushes it (up to every 100ms) and the table redraws twice a second.
-3. Streams **live executed trades** (the raw `@trade` stream — see note below on why not `@aggTrade`) for the same symbols and shows the **buy:sell executed-quantity ratio** over the last **10 seconds**, **30 seconds**, and **60 seconds**, also refreshed twice a second.
+3. Streams **live executed trades** (the raw `@trade` stream — see note below on why not `@aggTrade`) for the same symbols and shows the **buy:sell executed-quantity ratio** over the last **10 seconds**, **30 seconds**, **60 seconds**, and **5 minutes**, also refreshed twice a second.
 
 There is no server. Every file here is static HTML/CSS/JS meant to be pushed straight to GitHub Pages (or opened locally). The page calls `fapi.binance.com` (REST, only for the daily ranking and one-time order-book snapshots) and `fstream.binance.com` (WebSocket, for everything live) **directly from your browser** — Binance's public futures market-data endpoints send permissive CORS headers and the streams need no authentication, so this works with no backend proxy and no API key.
 
@@ -31,7 +31,6 @@ npx serve -l 8000
 - **Top N by turnover** — how many of the highest-turnover symbols to track (default 100, max 300). Type a number and click **Apply top N** (or press Enter). Instant — it re-slices the already-ranked list and reconnects the live streams for the new set, no new ranking fetch.
 - **Depth band (±%)** — how far from the current mid price to sum resting order-book quantity on each side. Defaults to 0.5%, matching the original ask; takes effect on the very next render tick (every 0.5s), since the whole book is already live in memory.
 - **Min gap multiplier** — hide rows below this Depth Gap × (e.g. set to `2` to only show symbols where one side has at least 2x the other).
-- **Search symbol** — filter the table by ticker substring (e.g. `BTC`).
 - **Pause / Resume** — disconnects the websockets entirely (useful to freeze the table while you read it, or to cut data usage).
 - **Rebuild turnover ranking** — forces an immediate rebuild of the 30-day-turnover ranking instead of waiting for the daily auto-rebuild (useful right after a new contract lists).
 
@@ -43,11 +42,12 @@ Click any column header to re-sort by it (defaults to Depth Gap × descending). 
 |---|---|
 | Symbol | Futures contract (USDT-margined perpetual) |
 | Price | Current mid price (best bid + best ask) / 2, from the live local order book |
-| Avg Turnover (30d) | Average daily quote-asset (USDT) volume over the last 30 completed days — this is what the turnover ranking is built from |
 | Buy Qty (band) | Live resting bid quantity within the depth band below current price |
 | Sell Qty (band) | Live resting ask quantity within the depth band above current price |
 | Depth Gap × | `max(buy,sell)/min(buy,sell)`, with a `B`/`S` tag showing which side is heavier — this is the default sort |
-| Flow 10s / 30s / 60s (B:S) | Of trades **executed** (not resting orders) in that trailing window, which side dominates and by how much — `B 2.10×` means buyer-initiated (taker-buy) quantity was 2.1x taker-sell quantity in that window |
+| Flow 10s / 30s / 60s / 5m (B:S) | Of trades **executed** (not resting orders) in that trailing window, which side dominates and by how much — `B 2.10×` means buyer-initiated (taker-buy) quantity was 2.1x taker-sell quantity in that window |
+
+The **30-day average turnover** ranking is still what decides which symbols make the "Top N" cut — it's just no longer shown as its own column, to keep the table focused on the live order-flow numbers.
 
 ## How the numbers are computed
 
