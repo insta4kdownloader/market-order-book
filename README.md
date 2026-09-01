@@ -5,6 +5,7 @@ A fully static, no-backend PWA (companion to your NSE Volume & Gap Scanner) that
 1. Ranks **every live USDT-margined perpetual contract** by its **average daily turnover (USDT) over the last 30 completed days**, once a day. The **"Top N by turnover"** box lets you pick how many of the top-ranked symbols to actually track (default 100) — changing it just re-slices the cached ranking, no re-fetch needed.
 2. Maintains a **live local order book** for every tracked symbol via Binance's diff-depth websocket stream (seeded from a REST snapshot, then updated tick by tick — the same method Binance's own docs recommend), and continuously sums resting quantity within **±0.5%** (configurable) of the current mid price on the **buy side** and the **sell side**. Rows are sorted by **Depth Gap ×** — `max(buy, sell) / min(buy, sell)` — so a symbol where sell-side resting quantity is 3× buy-side shows `S 3.00×` at the top. This is genuinely live: no polling interval, the book updates as fast as Binance pushes it (up to every 100ms) and the table redraws twice a second.
 3. Streams **live executed trades** (the raw `@trade` stream — see note below on why not `@aggTrade`) for the same symbols and shows the **buy:sell executed-quantity ratio** over the last **10 seconds**, **30 seconds**, **60 seconds**, and **5 minutes**, also refreshed twice a second.
+4. Runs a **forward-test (paper) trading loop** on top of all of that — see its own section below. It only ever simulates trades in your browser; it never places a real order.
 
 There is no server. Every file here is static HTML/CSS/JS meant to be pushed straight to GitHub Pages (or opened locally). The page calls `fapi.binance.com` (REST, only for the daily ranking and one-time order-book snapshots) and `fstream.binance.com` (WebSocket, for everything live) **directly from your browser** — Binance's public futures market-data endpoints send permissive CORS headers and the streams need no authentication, so this works with no backend proxy and no API key.
 
@@ -73,6 +74,27 @@ This follows Binance's documented procedure for maintaining a local order book f
 ### Why `@trade` instead of `@aggTrade` for the Flow columns
 
 Binance also offers an "aggregate trade" stream (`@aggTrade`) that bundles trades matched against the same order at the same price/time into one event. It looks like the more efficient choice, and this app used it originally — but in testing it turned out to silently deliver **zero** messages in some network/regional conditions (confirmed by connecting directly to Binance's websocket: `@depth` and `@bookTicker` streamed hundreds of updates while `@aggTrade` produced nothing at all for the same symbol over the same window), which is exactly the failure mode that showed up as permanently blank Flow columns while the order book kept working fine. The plain `@trade` stream (one event per individual executed trade, slightly more data volume but functionally identical fields — `q` for quantity, `m` for buyer-is-maker) delivered data immediately and reliably in the same test, so the app now uses that instead.
+
+## Forward-test (paper) trading
+
+**This is a simulation only. No real order is ever placed on your Binance account — the app makes no authenticated API calls at all, so it has no way to trade even if it wanted to.** It's a way to watch, in real time, what would have happened if you'd taken every setup this scanner flags.
+
+**Entry logic**, checked every render tick (twice a second) whenever no trade is open:
+
+1. A symbol's **Depth Gap ×** must be below **"Entry: max depth ×"** (default `2.5`).
+2. Its **Flow 10s, 30s, 60s, and 5m** columns must all point the **same direction** — all green (buy-heavy) or all red (sell-heavy). A symbol with, say, green 10s/30s/60s but red 5m does not qualify; the signal has to agree across every window.
+3. Every one of those four Flow multipliers must be at least **"Entry: min flow ×"** (default `1.4`).
+4. Among every symbol that clears all three bars, the one with the **highest average** of its four Flow multipliers is picked (ties broken by the **lowest** Depth Gap ×). A green pick opens a simulated **long**; a red pick opens a simulated **short**. The entry price is that instant's live mid price.
+
+**Exit logic**: TP and SL are fixed percentage moves from the entry price — **"TP (%)"** and **"SL (%)"**, default `0.3%` each. Every tick, the live price is checked against both; whichever is touched first closes the trade (`TP HIT` or `SL HIT` in the log). You can also hit **"Force close open trade"** at any time to exit manually (logged as `CLOSED`).
+
+**Only one trade is open at a time.** The moment a trade opens, the main table's rendered rows shrink to the top 10 (by whatever column you've sorted on) — a yellow banner above the table says so — but every tracked symbol keeps being scanned and scored in the background the whole time, so the next best candidate is ready to compare against the instant the open trade closes. As soon as it closes (TP, SL, or manual), the scanner immediately starts looking for the next qualifying setup — there's no cooldown.
+
+**Forward-test: ON/OFF** toggles the whole loop; it defaults to ON, so trades can start opening as soon as data is live. Turning it OFF stops new entries from opening but does not close whatever trade is currently open — use "Force close" for that.
+
+**The Forward-Test Trade Log** below the main table shows the currently open trade (highlighted, PnL updating live every tick) followed by up to 200 most-recent closed trades — entry/TP/SL/exit price, side, realized PnL %, how it closed, and when it opened/closed. The open trade and the whole log persist in `localStorage`, so a page reload doesn't lose your history or an in-flight trade (it keeps streaming that symbol's price even if it later falls out of the Top-N ranking, purely so it can still close itself correctly).
+
+**Design choices worth knowing**: the "highest average Flow ×" ranking rewards a symbol where all four windows are strongly aligned, not just one window spiking briefly. PnL is quoted in price-percentage terms only (no leverage, fees, funding, or slippage modeled) — real fills would differ, sometimes significantly, especially around the exact TP/SL price on a fast-moving symbol. Treat this purely as a way to sanity-check the strategy's logic against live data, not as a return estimate.
 
 ## Rate limits and data-source notes
 

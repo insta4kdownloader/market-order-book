@@ -51,6 +51,32 @@
   </div>
 </section>
 
+<section class="controls controls-trade">
+  <div class="control">
+    <label for="tradeMaxDepth">Entry: max depth ×</label>
+    <input type="number" id="tradeMaxDepth" min="1" step="0.1" value="2.5" />
+  </div>
+  <div class="control">
+    <label for="tradeMinFlow">Entry: min flow ×</label>
+    <input type="number" id="tradeMinFlow" min="1" step="0.1" value="1.4" />
+  </div>
+  <div class="control">
+    <label for="tradeTpPct">TP (%)</label>
+    <input type="number" id="tradeTpPct" min="0.05" step="0.05" value="0.3" />
+  </div>
+  <div class="control">
+    <label for="tradeSlPct">SL (%)</label>
+    <input type="number" id="tradeSlPct" min="0.05" step="0.05" value="0.3" />
+  </div>
+  <div class="control control-buttons">
+    <button class="btn btn-primary" id="tradeToggleBtn">Forward-test: ON</button>
+    <button class="btn btn-ghost" id="tradeForceCloseBtn" disabled>Force close open trade</button>
+  </div>
+  <div class="control trade-disclaimer">
+    Simulated (paper) trading only. No real orders are ever placed on your Binance account. Not financial advice.
+  </div>
+</section>
+
 <section class="table-wrap">
   <table id="resultsTable">
     <thead>
@@ -71,6 +97,33 @@
       <tr class="empty-row"><td colspan="10">Loading top futures by 30-day turnover…</td></tr>
     </tbody>
   </table>
+  <p class="table-note" id="tradeActiveNote" hidden></p>
+</section>
+
+<section class="trade-panel">
+  <h2>Forward-Test Trade Log</h2>
+  <div class="table-wrap">
+    <table id="tradeLogTable">
+      <thead>
+        <tr>
+          <th class="col-rank">#</th>
+          <th class="col-symbol">Symbol</th>
+          <th class="col-num">Side</th>
+          <th class="col-num">Entry</th>
+          <th class="col-num">TP</th>
+          <th class="col-num">SL</th>
+          <th class="col-num">Current / Exit</th>
+          <th class="col-num">PnL %</th>
+          <th class="col-num">Status</th>
+          <th class="col-num">Opened</th>
+          <th class="col-num">Closed</th>
+        </tr>
+      </thead>
+      <tbody id="tradeLogBody">
+        <tr class="empty-row"><td colspan="11">No trades yet — waiting for a symbol to qualify.</td></tr>
+      </tbody>
+    </table>
+  </div>
 </section>
 
 <footer class="foot">

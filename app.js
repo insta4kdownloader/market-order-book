@@ -22,7 +22,22 @@
 // 3. Subscribes to the raw trade websocket stream for the same symbols and
 //    keeps a short rolling trade log, classifying every trade as
 //    buy-taker or sell-taker, to show live buy:sell executed-quantity
-//    ratios over the last 10s / 30s / 60s.
+//    ratios over the last 10s / 30s / 60s / 5m.
+// 4. FORWARD-TEST (PAPER) TRADING — simulated only, no real orders are ever
+//    placed. Every render tick, with no trade currently open, every tracked
+//    symbol is checked against: Depth Gap × below a threshold (default 2.5),
+//    AND all four Flow windows pointing the same direction (all buy-heavy /
+//    green, or all sell-heavy / red) AND each at least a threshold ×
+//    (default 1.4). Among symbols that pass, the one with the highest
+//    AVERAGE of its four Flow multipliers wins (ties broken by the lower
+//    Depth Gap ×). A green pick opens a simulated long, a red pick a
+//    simulated short, at that instant's mid price. TP/SL are fixed % moves
+//    from entry (default 0.3% each), checked every tick against the live
+//    price; the trade closes itself the moment either is touched. Only one
+//    trade is open at a time — while one is open, the main table shows just
+//    its top 10 rows (everything else keeps computing in the background so
+//    the next pick is instant once the trade closes), and closed trades
+//    accumulate in the Forward-Test Trade Log below it.
 //
 // RATE LIMITS: Binance USDT-M futures REST has a 2400-request-weight/min
 // budget per IP. The 30-day-turnover ranking costs ~1 weight per symbol
@@ -39,6 +54,9 @@ const WS_BASE = 'wss://fstream.binance.com/stream';
 const LS = {
   ranking: 'bfscan-ranking-v2', // { dateKey, symbols: [{symbol, avgTurnover}] } — ALL eligible symbols, sorted desc
   topN: 'bfscan-topn-v1',
+  activeTrade: 'bfscan-active-trade-v1',
+  tradeLog: 'bfscan-trade-log-v1',
+  tradingEnabled: 'bfscan-trading-enabled-v1',
 };
 
 const DEFAULT_TOP_N = 100;
@@ -52,6 +70,8 @@ const DEPTH_STREAM_SPEED = '100ms'; // fastest update speed Binance offers for d
 const SNAPSHOT_LIMIT = 1000; // max depth REST snapshot size (weight 20)
 const SNAPSHOT_PACE_MS = 700; // one snapshot request roughly every 700ms -> ~1700 weight/min, safe
 const PRUNE_MULTIPLIER = 3; // keep book levels out to (band% * this) away from mid, drop the rest
+const TRADE_LOG_MAX = 200; // cap stored closed trades so localStorage doesn't grow unbounded
+const DISPLAY_LIMIT_WHILE_TRADING = 10;
 
 const $ = (sel) => document.querySelector(sel);
 const els = {
@@ -71,6 +91,14 @@ const els = {
   table: $('#resultsTable'),
   topbar: document.querySelector('.topbar'),
   controlsBar: document.querySelector('.controls'),
+  tradeActiveNote: $('#tradeActiveNote'),
+  tradeMaxDepth: $('#tradeMaxDepth'),
+  tradeMinFlow: $('#tradeMinFlow'),
+  tradeTpPct: $('#tradeTpPct'),
+  tradeSlPct: $('#tradeSlPct'),
+  tradeToggleBtn: $('#tradeToggleBtn'),
+  tradeForceCloseBtn: $('#tradeForceCloseBtn'),
+  tradeLogBody: $('#tradeLogBody'),
 };
 
 // ---------------------------------------------------------------------------
@@ -104,7 +132,10 @@ updateStickyOffsets();
 // ---------------------------------------------------------------------------
 
 let fullRanking = []; // [{symbol, avgTurnover}] ALL eligible symbols, sorted desc
-let universe = []; // [{symbol, avgTurnover}] top N slice currently in play
+let universe = []; // [{symbol, avgTurnover}] top N slice currently in play (what's DISPLAYED/ranked)
+let trackedSymbols = []; // symbols actually subscribed over websocket — universe, plus an in-flight
+                          // trade's symbol even if it has since fallen out of the top-N slice, so an
+                          // open forward-test trade always keeps getting live prices to close itself.
 let rows = new Map(); // symbol -> row state
 let sockets = [];
 let paused = false;
@@ -114,6 +145,12 @@ let rowEls = new Map(); // symbol -> <tr>
 let snapshotQueue = [];
 let snapshotQueued = new Set();
 let snapshotTimer = null;
+
+// --- forward-test (paper) trading state ---
+let tradingEnabled = true;
+let activeTrade = null; // { id, symbol, side:'long'|'short', entryPrice, entryTime, tp, sl, tpPct, slPct,
+                         //   depthMultAtEntry, avgFlowAtEntry, currentPrice, pnlPct, exitPrice?, exitTime?, exitReason? }
+let tradeLog = []; // closed trades, newest first
 
 function todayKey() {
   return new Date().toISOString().slice(0, 10);
@@ -370,8 +407,8 @@ function setWsStatus(state, label) {
 
 function connectStreams() {
   closeSockets();
-  if (universe.length === 0) return;
-  const chunks = chunk(universe.map((u) => u.symbol.toLowerCase()), WS_CHUNK_SIZE);
+  if (trackedSymbols.length === 0) return;
+  const chunks = chunk(trackedSymbols.map((s) => s.toLowerCase()), WS_CHUNK_SIZE);
   let openCount = 0;
   setWsStatus('pending', 'connecting…');
 
@@ -385,7 +422,7 @@ function connectStreams() {
 
     ws.onopen = () => {
       openCount++;
-      if (openCount === chunks.length) setWsStatus('on', `live (${universe.length} symbols)`);
+      if (openCount === chunks.length) setWsStatus('on', `live (${trackedSymbols.length} symbols)`);
     };
 
     ws.onmessage = (evt) => {
@@ -488,10 +525,11 @@ function buildRow(symbol) {
   return tr;
 }
 
-function computeSortedList(now, bandPct) {
-  const minMult = parseFloat(els.minMultiplier.value) || 1;
-
-  const list = universe.map((u) => {
+// Computed for the FULL ranked universe every tick, regardless of trade
+// state or display filters — this is the "keep calculating rest in the
+// background" data source both the table and the trading logic read from.
+function computeRows(now, bandPct) {
+  return universe.map((u) => {
     const row = rows.get(u.symbol) || emptyRow(u.symbol);
     computeBandAndPrune(row, bandPct);
     const r10 = flowRatio(row, now, 10000);
@@ -509,10 +547,15 @@ function computeSortedList(now, bandPct) {
       depthAgeMs: row.depthUpdatedAt ? now - row.depthUpdatedAt : Infinity,
       r10, r30, r60, r300,
     };
-  }).filter((r) => {
-    if (isFinite(r.multiplier) && r.multiplier < minMult) return false;
-    return true;
   });
+}
+
+// Display-only filtering (Min gap multiplier box) and sorting — kept
+// separate from computeRows() so the trading logic below always sees every
+// tracked symbol regardless of what the user has filtered the table to.
+function filterAndSortRows(allRows) {
+  const minMult = parseFloat(els.minMultiplier.value) || 1;
+  const list = allRows.filter((r) => !(isFinite(r.multiplier) && r.multiplier < minMult));
 
   list.sort((a, b) => {
     let av = a[sortKey], bv = b[sortKey];
@@ -527,20 +570,238 @@ function computeSortedList(now, bandPct) {
   return list;
 }
 
+// ---------------------------------------------------------------------------
+// forward-test (paper) trading
+// ---------------------------------------------------------------------------
+
+// Classifies one Flow window's {buy, sell} pair into a side + multiplier,
+// the same way the table's pills do (fmtRatioPill), so the trading logic's
+// notion of "green"/"red" always matches what's on screen.
+function windowSideAndMult(r) {
+  if (!r) return null;
+  const { buy, sell } = r;
+  if (buy === 0 && sell === 0) return null; // no trades in this window at all — can't qualify
+  if (buy > sell) return { side: 'buy', mult: sell === 0 ? Infinity : buy / sell };
+  if (sell > buy) return { side: 'sell', mult: buy === 0 ? Infinity : sell / buy };
+  return { side: 'neutral', mult: 1 };
+}
+
+// A candidate qualifies only if: the local order book is synced, the Depth
+// Gap × is below maxDepth, AND all four Flow windows agree with the depth's
+// heavy side (all green or all red — never a mix) AND each Flow window's ×
+// is at least minFlow. Returns null if any condition fails.
+function evaluateCandidate(r, maxDepth, minFlow) {
+  if (!r.synced || !r.price) return null;
+  if (!isFinite(r.multiplier) || r.multiplier >= maxDepth) return null;
+  const dir = r.heavySide; // 'buy' (green) or 'sell' (red) — 'neutral' can't qualify
+  if (dir !== 'buy' && dir !== 'sell') return null;
+
+  const mults = [];
+  for (const w of [r.r10, r.r30, r.r60, r.r300]) {
+    const ws = windowSideAndMult(w);
+    if (!ws || ws.side !== dir) return null;
+    if (!(ws.mult >= minFlow)) return null;
+    mults.push(isFinite(ws.mult) ? ws.mult : 1e6); // cap Infinity so the average stays a sane number
+  }
+  const avgFlow = mults.reduce((a, b) => a + b, 0) / mults.length;
+  return { symbol: r.symbol, dir, depthMult: r.multiplier, avgFlow, price: r.price };
+}
+
+// Scans every tracked symbol (not just what's currently displayed) and, if
+// anything qualifies, opens the single best candidate: highest average Flow
+// × wins, ties broken by the lower Depth Gap ×.
+function tryOpenTrade(allRows) {
+  if (activeTrade) return;
+  const maxDepth = parseFloat(els.tradeMaxDepth.value) || 2.5;
+  const minFlow = parseFloat(els.tradeMinFlow.value) || 1.4;
+
+  let best = null;
+  for (const r of allRows) {
+    const c = evaluateCandidate(r, maxDepth, minFlow);
+    if (!c) continue;
+    if (
+      !best ||
+      c.avgFlow > best.avgFlow ||
+      (c.avgFlow === best.avgFlow && c.depthMult < best.depthMult)
+    ) {
+      best = c;
+    }
+  }
+  if (best) openTrade(best);
+}
+
+function openTrade(candidate) {
+  const tpPct = parseFloat(els.tradeTpPct.value) || 0.3;
+  const slPct = parseFloat(els.tradeSlPct.value) || 0.3;
+  const entryPrice = candidate.price;
+  const side = candidate.dir === 'buy' ? 'long' : 'short';
+  const tp = side === 'long' ? entryPrice * (1 + tpPct / 100) : entryPrice * (1 - tpPct / 100);
+  const sl = side === 'long' ? entryPrice * (1 - slPct / 100) : entryPrice * (1 + slPct / 100);
+
+  activeTrade = {
+    id: `${candidate.symbol}-${Date.now()}`,
+    symbol: candidate.symbol,
+    side,
+    entryPrice,
+    entryTime: Date.now(),
+    tpPct, slPct, tp, sl,
+    depthMultAtEntry: candidate.depthMult,
+    avgFlowAtEntry: candidate.avgFlow,
+    currentPrice: entryPrice,
+    pnlPct: 0,
+  };
+
+  // Make sure this symbol keeps streaming even if a future top-N re-slice
+  // or ranking rebuild would otherwise have dropped it.
+  if (!trackedSymbols.includes(candidate.symbol)) {
+    trackedSymbols = [...trackedSymbols, candidate.symbol];
+    if (!rows.has(candidate.symbol)) rows.set(candidate.symbol, emptyRow(candidate.symbol));
+    queueSnapshot(candidate.symbol);
+    connectStreams();
+  }
+
+  els.tradeForceCloseBtn.disabled = false;
+  saveTradeState();
+}
+
+// Checks the live price against TP/SL every tick and updates live PnL —
+// this is what makes the open row in the trade log update in real time.
+function updateActiveTrade() {
+  if (!activeTrade) return;
+  const row = rows.get(activeTrade.symbol);
+  const price = row ? row.mid : null;
+  if (!price) return;
+
+  activeTrade.currentPrice = price;
+  activeTrade.pnlPct = activeTrade.side === 'long'
+    ? ((price - activeTrade.entryPrice) / activeTrade.entryPrice) * 100
+    : ((activeTrade.entryPrice - price) / activeTrade.entryPrice) * 100;
+
+  if (activeTrade.side === 'long') {
+    if (price >= activeTrade.tp) { closeTrade('TP'); return; }
+    if (price <= activeTrade.sl) { closeTrade('SL'); return; }
+  } else {
+    if (price <= activeTrade.tp) { closeTrade('TP'); return; }
+    if (price >= activeTrade.sl) { closeTrade('SL'); return; }
+  }
+}
+
+function closeTrade(reason) {
+  if (!activeTrade) return;
+  const closed = {
+    ...activeTrade,
+    exitPrice: activeTrade.currentPrice,
+    exitTime: Date.now(),
+    exitReason: reason, // 'TP' | 'SL' | 'MANUAL'
+  };
+  tradeLog.unshift(closed);
+  if (tradeLog.length > TRADE_LOG_MAX) tradeLog.length = TRADE_LOG_MAX;
+  activeTrade = null;
+  els.tradeForceCloseBtn.disabled = true;
+  saveTradeState();
+}
+
+function saveTradeState() {
+  try {
+    localStorage.setItem(LS.activeTrade, activeTrade ? JSON.stringify(activeTrade) : '');
+    localStorage.setItem(LS.tradeLog, JSON.stringify(tradeLog));
+  } catch (e) {
+    // localStorage full/unavailable — trading still works for this session, just won't persist
+  }
+}
+
+function loadTradeState() {
+  try {
+    const at = localStorage.getItem(LS.activeTrade);
+    if (at) activeTrade = JSON.parse(at);
+    const tl = localStorage.getItem(LS.tradeLog);
+    if (tl) tradeLog = JSON.parse(tl) || [];
+    const te = localStorage.getItem(LS.tradingEnabled);
+    if (te !== null) tradingEnabled = te === 'true';
+  } catch (e) {
+    // corrupt/unavailable state — start fresh
+  }
+}
+
+function fmtPnl(pct) {
+  if (pct === null || pct === undefined || !isFinite(pct)) return '—';
+  const cls = pct > 0.0005 ? 'pnl-pos' : pct < -0.0005 ? 'pnl-neg' : 'pnl-flat';
+  const sign = pct > 0 ? '+' : '';
+  return `<span class="${cls}">${sign}${pct.toFixed(3)}%</span>`;
+}
+
+function fmtTime(ts) {
+  return ts ? new Date(ts).toLocaleTimeString() : '—';
+}
+
+function statusBadge(trade) {
+  if (!trade.exitReason) return '<span class="status-open">OPEN</span>';
+  if (trade.exitReason === 'TP') return '<span class="status-tp">TP HIT</span>';
+  if (trade.exitReason === 'SL') return '<span class="status-sl">SL HIT</span>';
+  return '<span class="status-manual">CLOSED</span>';
+}
+
+function renderTradeLog() {
+  const list = activeTrade ? [activeTrade, ...tradeLog] : tradeLog;
+  if (list.length === 0) {
+    els.tradeLogBody.innerHTML = '<tr class="empty-row"><td colspan="11">No trades yet — waiting for a symbol to qualify.</td></tr>';
+    return;
+  }
+  els.tradeLogBody.innerHTML = list.map((t, i) => {
+    const isOpen = !t.exitReason;
+    const sideBadge = t.side === 'long'
+      ? '<span class="pill pill-buy">LONG</span>'
+      : '<span class="pill pill-sell">SHORT</span>';
+    return `<tr class="${isOpen ? 'trade-row-open' : ''}">
+      <td class="col-rank">${i + 1}</td>
+      <td class="col-symbol symbol-cell">${t.symbol.replace(/USDT$/, '')}</td>
+      <td class="col-num">${sideBadge}</td>
+      <td class="col-num">${fmtNum(t.entryPrice, 4)}</td>
+      <td class="col-num">${fmtNum(t.tp, 4)}</td>
+      <td class="col-num">${fmtNum(t.sl, 4)}</td>
+      <td class="col-num">${fmtNum(isOpen ? t.currentPrice : t.exitPrice, 4)}</td>
+      <td class="col-num">${fmtPnl(t.pnlPct)}</td>
+      <td class="col-num">${statusBadge(t)}</td>
+      <td class="col-num">${fmtTime(t.entryTime)}</td>
+      <td class="col-num">${isOpen ? '—' : fmtTime(t.exitTime)}</td>
+    </tr>`;
+  }).join('');
+}
+
 function render() {
   const now = Date.now();
   const bandPct = parseFloat(els.bandPct.value) || 0.5;
-  const list = computeSortedList(now, bandPct);
+
+  // Always compute every tracked symbol — this keeps running in full even
+  // while a trade is open and the table below is only showing 10 rows.
+  const allRows = computeRows(now, bandPct);
+
+  updateActiveTrade();
+  if (tradingEnabled && !activeTrade) tryOpenTrade(allRows);
+
+  const sorted = filterAndSortRows(allRows);
+  const list = activeTrade ? sorted.slice(0, DISPLAY_LIMIT_WHILE_TRADING) : sorted;
+
+  if (activeTrade) {
+    els.tradeActiveNote.hidden = false;
+    els.tradeActiveNote.textContent =
+      `Trade active on ${activeTrade.symbol.replace(/USDT$/, '')} (${activeTrade.side.toUpperCase()}) — showing top ${DISPLAY_LIMIT_WHILE_TRADING} rows only; all ${allRows.length} tracked symbols keep updating in the background.`;
+  } else {
+    els.tradeActiveNote.hidden = true;
+  }
 
   if (list.length === 0) {
     els.resultsBody.innerHTML = '<tr class="empty-row"><td colspan="10">No symbols match the current filters.</td></tr>';
     rowEls.clear();
   } else {
-    if (els.resultsBody.querySelector('.empty-row')) els.resultsBody.innerHTML = '';
+    // Rebuild from scratch each tick rather than only appending: while a
+    // trade is active the displayed set shrinks to 10 rows, and once it
+    // closes it grows back — leftover rows from a previous, larger list
+    // would otherwise stick around since appendChild only moves nodes
+    // that ARE in the new fragment, it doesn't remove ones that aren't.
+    while (els.resultsBody.firstChild) els.resultsBody.removeChild(els.resultsBody.firstChild);
     const frag = document.createDocumentFragment();
-    let syncedCount = 0;
     list.forEach((r, i) => {
-      if (r.synced) syncedCount++;
       let tr = rowEls.get(r.symbol);
       if (!tr) {
         tr = buildRow(r.symbol);
@@ -567,11 +828,15 @@ function render() {
       frag.appendChild(tr);
     });
     els.resultsBody.appendChild(frag);
-    els.depthLabel.textContent = `order book: live, ${syncedCount}/${list.length} synced`;
+    const totalSynced = allRows.filter((r) => r.synced).length;
+    els.depthLabel.textContent = activeTrade
+      ? `order book: live, ${totalSynced}/${allRows.length} synced (background)`
+      : `order book: live, ${totalSynced}/${allRows.length} synced`;
   }
 
   els.universeLabel.textContent = `universe: ${universe.length} symbols`;
   els.lastUpdate.textContent = `updated ${new Date(now).toLocaleTimeString()}`;
+  renderTradeLog();
 }
 
 function renderTick() {
@@ -632,16 +897,42 @@ els.topNInput.addEventListener('keydown', (e) => {
 els.minMultiplier.addEventListener('input', render);
 els.bandPct.addEventListener('change', render);
 
+function setTradeToggleUI() {
+  els.tradeToggleBtn.textContent = `Forward-test: ${tradingEnabled ? 'ON' : 'OFF'}`;
+  els.tradeToggleBtn.classList.toggle('btn-primary', tradingEnabled);
+  els.tradeToggleBtn.classList.toggle('btn-ghost', !tradingEnabled);
+}
+
+els.tradeToggleBtn.addEventListener('click', () => {
+  tradingEnabled = !tradingEnabled;
+  localStorage.setItem(LS.tradingEnabled, String(tradingEnabled));
+  setTradeToggleUI();
+});
+
+els.tradeForceCloseBtn.addEventListener('click', () => {
+  if (activeTrade) closeTrade('MANUAL');
+});
+
 function applyTopN() {
   const n = readTopNInput();
   localStorage.setItem(LS.topN, String(n));
   universe = fullRanking.slice(0, n);
-  rows = new Map(universe.map((u) => [u.symbol, emptyRow(u.symbol)]));
+
+  // Keep tracking an in-flight forward-test trade's symbol even if it falls
+  // out of the top-N slice (e.g. after a reload with a smaller N, or the
+  // daily ranking rebuild), so it keeps getting live prices to close itself.
+  // It won't show as a ranked row in the main table, but stays live for the
+  // trade log and TP/SL checking.
+  const symbolSet = new Set(universe.map((u) => u.symbol));
+  if (activeTrade && activeTrade.symbol) symbolSet.add(activeTrade.symbol);
+  trackedSymbols = Array.from(symbolSet);
+
+  rows = new Map(trackedSymbols.map((s) => [s, emptyRow(s)]));
   rowEls.clear();
   els.resultsBody.innerHTML = '<tr class="empty-row"><td colspan="10">Connecting…</td></tr>';
   snapshotQueue = [];
   snapshotQueued = new Set();
-  universe.forEach((u) => queueSnapshot(u.symbol));
+  trackedSymbols.forEach((s) => queueSnapshot(s));
   connectStreams();
   render();
 }
@@ -663,6 +954,10 @@ async function startup() {
   els.topNInput.value = Number.isFinite(savedN) && savedN > 0 ? savedN : DEFAULT_TOP_N;
   applyTopN();
 }
+
+loadTradeState();
+setTradeToggleUI();
+els.tradeForceCloseBtn.disabled = !activeTrade;
 
 startSnapshotPump();
 setInterval(renderTick, RENDER_INTERVAL_MS);

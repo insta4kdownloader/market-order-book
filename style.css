@@ -84,6 +84,22 @@ body {
 }
 .control-buttons { flex-direction: row; gap: 10px; }
 
+/* The trade-settings bar sits below the main controls bar in normal flow —
+   it is deliberately NOT sticky. Two sticky bars stacked at the same
+   --topbar-h offset would overlap each other once both are pinned, and
+   the live-updating table header offset (--sticky-h) is only computed
+   from the topbar + the FIRST .controls bar (see app.js), so keeping this
+   one static avoids fighting that calculation. */
+.controls-trade { position: static; top: auto; }
+.trade-disclaimer {
+  flex-direction: row;
+  align-items: center;
+  color: var(--muted);
+  font-size: 11.5px;
+  max-width: 320px;
+  line-height: 1.4;
+}
+
 .btn {
   border: none;
   border-radius: 8px;
@@ -161,6 +177,40 @@ tbody tr.empty-row td { text-align: center; color: var(--muted); padding: 40px 0
 .pill-neutral { background: rgba(147, 161, 189, 0.14); color: var(--muted); }
 
 .stale { opacity: 0.45; }
+
+.table-note {
+  margin: 0 20px 12px;
+  padding: 8px 12px;
+  background: rgba(240, 185, 11, 0.1);
+  border: 1px solid rgba(240, 185, 11, 0.3);
+  border-radius: 6px;
+  color: var(--accent);
+  font-size: 12.5px;
+}
+
+.trade-panel {
+  padding: 8px 0 30px;
+  border-top: 1px solid var(--panel-border);
+}
+.trade-panel h2 {
+  font-size: 15px;
+  margin: 20px 20px 12px;
+}
+.trade-panel .table-wrap { padding: 0 20px 20px; }
+.trade-panel table { min-width: 900px; }
+.trade-panel thead th { position: static; } /* trade log is short — no need to pin its header */
+
+.pnl-pos { color: var(--green); font-weight: 700; }
+.pnl-neg { color: var(--red); font-weight: 700; }
+.pnl-flat { color: var(--muted); }
+
+.status-open { color: var(--accent); font-weight: 700; }
+.status-tp { color: var(--green); font-weight: 700; }
+.status-sl { color: var(--red); font-weight: 700; }
+.status-manual { color: var(--muted); font-weight: 700; }
+
+tr.trade-row-open { background: rgba(240, 185, 11, 0.06); }
+tr.trade-row-open:hover { background: rgba(240, 185, 11, 0.1); }
 
 .foot {
   display: flex;
