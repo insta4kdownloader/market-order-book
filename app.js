@@ -705,25 +705,25 @@ function closeTrade(reason) {
   saveTradeState();
 }
 
+// Deliberately NOT persisted: the open trade and the trade log live only in
+// memory for this page session. A reload always starts with an empty log
+// and no open trade, and the scanner immediately starts looking for a new
+// setup from scratch. Only the ON/OFF toggle preference survives a reload.
 function saveTradeState() {
-  try {
-    localStorage.setItem(LS.activeTrade, activeTrade ? JSON.stringify(activeTrade) : '');
-    localStorage.setItem(LS.tradeLog, JSON.stringify(tradeLog));
-  } catch (e) {
-    // localStorage full/unavailable — trading still works for this session, just won't persist
-  }
+  // no-op — kept as a named call site so the intent is documented at every
+  // place a trade opens/closes, even though there's nothing to persist.
 }
 
 function loadTradeState() {
   try {
-    const at = localStorage.getItem(LS.activeTrade);
-    if (at) activeTrade = JSON.parse(at);
-    const tl = localStorage.getItem(LS.tradeLog);
-    if (tl) tradeLog = JSON.parse(tl) || [];
+    // Purge any trade data persisted by an older version of this app so a
+    // stale session's trades can never resurface.
+    localStorage.removeItem(LS.activeTrade);
+    localStorage.removeItem(LS.tradeLog);
     const te = localStorage.getItem(LS.tradingEnabled);
     if (te !== null) tradingEnabled = te === 'true';
   } catch (e) {
-    // corrupt/unavailable state — start fresh
+    // localStorage unavailable — defaults stand
   }
 }
 
