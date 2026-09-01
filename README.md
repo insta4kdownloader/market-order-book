@@ -88,7 +88,7 @@ Binance also offers an "aggregate trade" stream (`@aggTrade`) that bundles trade
 
 **Exit logic**: TP and SL are fixed percentage moves from the entry price — **"TP (%)"** and **"SL (%)"**, default `0.3%` each. Every tick, the live price is checked against both; whichever is touched first closes the trade (`TP HIT` or `SL HIT` in the log). You can also hit **"Force close open trade"** at any time to exit manually (logged as `CLOSED`).
 
-**Only one trade is open at a time.** The moment a trade opens, the main table's rendered rows shrink to the top 10 (by whatever column you've sorted on) — a yellow banner above the table says so — but every tracked symbol keeps being scanned and scored in the background the whole time, so the next best candidate is ready to compare against the instant the open trade closes. As soon as it closes (TP, SL, or manual), the scanner immediately starts looking for the next qualifying setup — there's no cooldown.
+**Only one trade is open at a time.** The moment a trade opens, the main table's rendered rows shrink to just that one symbol — a yellow banner above the table says so — but every tracked symbol keeps being scanned and scored in the background the whole time, so the next best candidate is ready to compare against the instant the open trade closes. As soon as it closes (TP, SL, or manual), the scanner immediately starts looking for the next qualifying setup — there's no cooldown, and the table goes back to showing the full ranked list.
 
 **Forward-test: ON/OFF** toggles the whole loop; it defaults to ON, so trades can start opening as soon as data is live. Turning it OFF stops new entries from opening but does not close whatever trade is currently open — use "Force close" for that.
 

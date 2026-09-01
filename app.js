@@ -34,8 +34,8 @@
 //    simulated short, at that instant's mid price. TP/SL are fixed % moves
 //    from entry (default 0.3% each), checked every tick against the live
 //    price; the trade closes itself the moment either is touched. Only one
-//    trade is open at a time — while one is open, the main table shows just
-//    its top 10 rows (everything else keeps computing in the background so
+//    trade is open at a time — while one is open, the main table shows ONLY
+//    its own row (everything else keeps computing in the background so
 //    the next pick is instant once the trade closes), and closed trades
 //    accumulate in the Forward-Test Trade Log below it.
 //
@@ -71,7 +71,6 @@ const SNAPSHOT_LIMIT = 1000; // max depth REST snapshot size (weight 20)
 const SNAPSHOT_PACE_MS = 700; // one snapshot request roughly every 700ms -> ~1700 weight/min, safe
 const PRUNE_MULTIPLIER = 3; // keep book levels out to (band% * this) away from mid, drop the rest
 const TRADE_LOG_MAX = 200; // cap stored closed trades so localStorage doesn't grow unbounded
-const DISPLAY_LIMIT_WHILE_TRADING = 10;
 
 const $ = (sel) => document.querySelector(sel);
 const els = {
@@ -525,29 +524,34 @@ function buildRow(symbol) {
   return tr;
 }
 
+// Computes one symbol's full row of table/trading data. Shared by
+// computeRows() (the ranked universe) and by render()'s fallback for an
+// active trade whose symbol has since fallen out of the top-N ranking.
+function computeSymbolRow(symbol, now, bandPct) {
+  const row = rows.get(symbol) || emptyRow(symbol);
+  computeBandAndPrune(row, bandPct);
+  const r10 = flowRatio(row, now, 10000);
+  const r30 = flowRatio(row, now, 30000);
+  const r60 = flowRatio(row, now, 60000);
+  const r300 = flowRatio(row, now, 300000);
+  return {
+    symbol,
+    price: row.mid,
+    buyQty: row.buyQty,
+    sellQty: row.sellQty,
+    multiplier: row.multiplier,
+    heavySide: row.heavySide,
+    synced: row.book.synced,
+    depthAgeMs: row.depthUpdatedAt ? now - row.depthUpdatedAt : Infinity,
+    r10, r30, r60, r300,
+  };
+}
+
 // Computed for the FULL ranked universe every tick, regardless of trade
 // state or display filters — this is the "keep calculating rest in the
 // background" data source both the table and the trading logic read from.
 function computeRows(now, bandPct) {
-  return universe.map((u) => {
-    const row = rows.get(u.symbol) || emptyRow(u.symbol);
-    computeBandAndPrune(row, bandPct);
-    const r10 = flowRatio(row, now, 10000);
-    const r30 = flowRatio(row, now, 30000);
-    const r60 = flowRatio(row, now, 60000);
-    const r300 = flowRatio(row, now, 300000);
-    return {
-      symbol: u.symbol,
-      price: row.mid,
-      buyQty: row.buyQty,
-      sellQty: row.sellQty,
-      multiplier: row.multiplier,
-      heavySide: row.heavySide,
-      synced: row.book.synced,
-      depthAgeMs: row.depthUpdatedAt ? now - row.depthUpdatedAt : Infinity,
-      r10, r30, r60, r300,
-    };
-  });
+  return universe.map((u) => computeSymbolRow(u.symbol, now, bandPct));
 }
 
 // Display-only filtering (Min gap multiplier box) and sorting — kept
@@ -773,19 +777,32 @@ function render() {
   const bandPct = parseFloat(els.bandPct.value) || 0.5;
 
   // Always compute every tracked symbol — this keeps running in full even
-  // while a trade is open and the table below is only showing 10 rows.
+  // while a trade is open and the table below is only showing that one row.
   const allRows = computeRows(now, bandPct);
 
   updateActiveTrade();
   if (tradingEnabled && !activeTrade) tryOpenTrade(allRows);
 
   const sorted = filterAndSortRows(allRows);
-  const list = activeTrade ? sorted.slice(0, DISPLAY_LIMIT_WHILE_TRADING) : sorted;
+  // While a trade is open, the table shows ONLY that symbol's row — everything
+  // else keeps being computed above (allRows), just not rendered, so the next
+  // candidate is ready to compare against the instant this trade closes.
+  let list;
+  if (activeTrade) {
+    const tradedRow = allRows.find((r) => r.symbol === activeTrade.symbol)
+      // The traded symbol can fall out of the top-N ranking mid-trade (a
+      // re-slice or the daily rebuild) while still streaming live via
+      // trackedSymbols — compute its row directly rather than showing nothing.
+      || computeSymbolRow(activeTrade.symbol, now, bandPct);
+    list = [tradedRow];
+  } else {
+    list = sorted;
+  }
 
   if (activeTrade) {
     els.tradeActiveNote.hidden = false;
     els.tradeActiveNote.textContent =
-      `Trade active on ${activeTrade.symbol.replace(/USDT$/, '')} (${activeTrade.side.toUpperCase()}) — showing top ${DISPLAY_LIMIT_WHILE_TRADING} rows only; all ${allRows.length} tracked symbols keep updating in the background.`;
+      `Trade active on ${activeTrade.symbol.replace(/USDT$/, '')} (${activeTrade.side.toUpperCase()}) — showing only that symbol; all ${allRows.length} tracked symbols keep updating in the background.`;
   } else {
     els.tradeActiveNote.hidden = true;
   }
@@ -795,7 +812,7 @@ function render() {
     rowEls.clear();
   } else {
     // Rebuild from scratch each tick rather than only appending: while a
-    // trade is active the displayed set shrinks to 10 rows, and once it
+    // trade is active the displayed set shrinks to just that symbol, and once it
     // closes it grows back — leftover rows from a previous, larger list
     // would otherwise stick around since appendChild only moves nodes
     // that ARE in the new fragment, it doesn't remove ones that aren't.
